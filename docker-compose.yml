@@ -1,0 +1,21 @@
+services:
+  cryptobot:
+    build: .
+    container_name: cryptobot
+    environment:
+      # === Bitvavo ===
+      BITVAVO_API_KEY: "${BITVAVO_API_KEY}"
+      BITVAVO_API_SECRET: "${BITVAVO_API_SECRET}"
+
+      # === OpenAI (optioneel) ===
+      OPENAI_API_KEY: "${OPENAI_API_KEY}"
+
+      # === Bot settings ===
+      SYMBOL: "${SYMBOL:-BTC-EUR}"
+      INTERVAL: "${INTERVAL:-15m}"
+      CANDLE_LIMIT: "${CANDLE_LIMIT:-200}"
+      USE_AI: "${USE_AI:-false}"
+
+      # === Scheduler loop ===
+      RUN_EVERY_SECONDS: "${RUN_EVERY_SECONDS:-900}"
+    restart: unless-stopped

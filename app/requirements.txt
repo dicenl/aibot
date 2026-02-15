@@ -1,0 +1,5 @@
+python-bitvavo-api
+pandas
+ta
+python-dotenv
+openai
