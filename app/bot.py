@@ -109,4 +109,32 @@ def main():
 
     candles = bitvavo.candles(symbol, interval, {"limit": limit})
     if isinstance(candles, dict) and candles.get("error"):
-        rai
+        raise RuntimeError(f"Bitvavo error: {candles}")
+
+    df = compute_indicators(to_df(candles))
+
+    last = df.iloc[-1].to_dict()
+    snapshot = {
+        "symbol": symbol,
+        "interval": interval,
+        "timestamp_utc": last["ts"].isoformat(),
+        "close": float(last["close"]),
+        "rsi_14": None if pd.isna(last["rsi_14"]) else float(last["rsi_14"]),
+        "ema_20": None if pd.isna(last["ema_20"]) else float(last["ema_20"]),
+        "ema_50": None if pd.isna(last["ema_50"]) else float(last["ema_50"]),
+    }
+
+    baseline = baseline_rule(snapshot)
+    ai = ai_advice({**snapshot, "baseline": baseline})
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    print("=" * 72)
+    print(f"{now} | {symbol} | interval={interval} | close={snapshot['close']}")
+    print(f"RSI14={snapshot['rsi_14']} EMA20={snapshot['ema_20']} EMA50={snapshot['ema_50']}")
+    print("- Baseline:", baseline)
+    print("- AI:", ai)
+    print("=" * 72)
+
+
+if __name__ == "__main__":
+    main()
