@@ -116,8 +116,7 @@ def parse_symbols() -> list[str]:
     """
     symbols_env = os.getenv("SYMBOLS", "").strip()
     if symbols_env:
-        symbols = [s.strip().upper() for s in symbols_env.split(",") if s.strip()]
-        return symbols
+        return [s.strip().upper() for s in symbols_env.split(",") if s.strip()]
     return [os.getenv("SYMBOL", "BTC-EUR").strip().upper()]
 
 
@@ -128,6 +127,7 @@ def safe_float(x):
         return float(x)
     except Exception:
         return None
+
 
 # ----------------------------
 # Telegram
@@ -151,7 +151,6 @@ def telegram_send(message: str) -> bool:
         return r.status_code == 200
     except Exception:
         return False
-
 
 
 # ----------------------------
@@ -179,14 +178,11 @@ def main():
         try:
             candles = bitvavo.candles(symbol, interval, {"limit": limit})
 
-            # Bitvavo can return dict with error
             if isinstance(candles, dict) and candles.get("error"):
-                err = candles
-                print(f"\n[{symbol}] Bitvavo error: {err}")
+                print(f"\n[{symbol}] Bitvavo error: {candles}")
                 summary.append((symbol, "ERROR", 0.0, "Bitvavo error"))
                 continue
 
-            # Or sometimes empty list
             if not isinstance(candles, list) or len(candles) < 60:
                 print(f"\n[{symbol}] Not enough candle data returned (len={len(candles) if hasattr(candles,'__len__') else 'n/a'})")
                 summary.append((symbol, "ERROR", 0.0, "Not enough candle data"))
@@ -230,23 +226,23 @@ def main():
             short_reason = short_reason[:120] + "…"
         print(f"{sym:10s}  {action:5s}  conf={conf_str}  {short_reason}")
 
+    # Telegram summary (default: only BUY/SELL/ERROR)
+    send_all = os.getenv("TELEGRAM_SEND_ALL", "false").lower() == "true"
+    lines = []
+    for sym, action, conf, reason in summary:
+        if action == "ERROR":
+            lines.append(f"❗ {sym}: ERROR - {reason}")
+            continue
+        if (not send_all) and action == "HOLD":
+            continue
+        lines.append(f"{sym}: {action} ({conf:.2f}) - {reason}")
+
+    if lines:
+        header = f"📊 CryptoBot {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} ({interval})"
+        ok = telegram_send(header + "\n" + "\n".join(lines))
+        print(f"Telegram sent: {ok}")
+
     print("--- End ---\n")
-
-# Send Telegram summary (only non-HOLD by default, unless you want all)
-send_all = os.getenv("TELEGRAM_SEND_ALL", "false").lower() == "true"
-
-lines = []
-for sym, action, conf, reason in summary:
-    if action == "ERROR":
-        lines.append(f"❗ {sym}: ERROR - {reason}")
-        continue
-    if (not send_all) and action == "HOLD":
-        continue
-    lines.append(f"{sym}: {action} ({conf:.2f}) - {reason}")
-
-if lines:
-    header = f"📊 CryptoBot {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} ({interval})"
-    telegram_send(header + "\n" + "\n".join(lines))
 
 
 if __name__ == "__main__":
