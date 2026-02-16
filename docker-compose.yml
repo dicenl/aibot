@@ -17,6 +17,13 @@ services:
       CANDLE_LIMIT: "${CANDLE_LIMIT:-300}"
       USE_AI: "${USE_AI:-false}"
 
+      # === Telegram settings ===
+      TELEGRAM_ENABLED: "${TELEGRAM_ENABLED:-true}"
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
+      TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID:-}"
+      TELEGRAM_SEND_ALL: "${TELEGRAM_SEND_ALL:-false}"
+
+
       # === Scheduler loop ===
       RUN_EVERY_SECONDS: "${RUN_EVERY_SECONDS:-900}"
     restart: unless-stopped
