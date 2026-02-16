@@ -1,5 +1,6 @@
 import os
 import json
+import requests
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -128,6 +129,30 @@ def safe_float(x):
     except Exception:
         return None
 
+# ----------------------------
+# Telegram
+# ----------------------------
+def telegram_send(message: str) -> bool:
+    enabled = os.getenv("TELEGRAM_ENABLED", "true").lower() == "true"
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+
+    if not enabled or not token or not chat_id:
+        return False
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": message,
+        "disable_web_page_preview": True,
+    }
+    try:
+        r = requests.post(url, json=payload, timeout=10)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
 
 # ----------------------------
 # Main
@@ -195,6 +220,24 @@ def main():
         except Exception as e:
             print(f"\n[{symbol}] Exception: {e}")
             summary.append((symbol, "ERROR", 0.0, f"Exception: {e}"))
+
+# Send Telegram summary (only non-HOLD by default, unless you want all)
+send_all = os.getenv("TELEGRAM_SEND_ALL", "false").lower() == "true"
+
+lines = []
+for sym, action, conf, reason in summary:
+    if action == "ERROR":
+        lines.append(f"❗ {sym}: ERROR - {reason}")
+        continue
+    if (not send_all) and action == "HOLD":
+        continue
+    lines.append(f"{sym}: {action} ({conf:.2f}) - {reason}")
+
+if lines:
+    header = f"📊 CryptoBot {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} ({interval})"
+    telegram_send(header + "\n" + "\n".join(lines))
+
+
 
     # Summary table
     print("\n--- Summary (AI output) ---")

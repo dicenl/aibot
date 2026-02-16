@@ -3,3 +3,4 @@ pandas
 ta
 python-dotenv
 openai
+requests
