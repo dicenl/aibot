@@ -48,7 +48,6 @@ def telegram_send(message: str) -> bool:
     if not enabled:
         return False
     if not token or not chat_id:
-        # Don't raise; just make it obvious in logs
         print("Telegram not sent: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing")
         return False
 
@@ -202,9 +201,9 @@ def main():
     limit = int(os.getenv("CANDLE_LIMIT", "300"))
 
     # Telegram behavior
-    send_all = env_bool("TELEGRAM_SEND_ALL", False)         # send HOLD too
-    on_change = env_bool("TELEGRAM_ON_CHANGE", True)        # only alert if action changed
-    conf_threshold = float(os.getenv("TELEGRAM_MIN_CONF", "0.0"))  # filter on AI confidence
+    send_all = env_bool("TELEGRAM_SEND_ALL", False)      # send HOLD too
+    on_change = env_bool("TELEGRAM_ON_CHANGE", True)     # only alert if action changed
+    conf_threshold = float(os.getenv("TELEGRAM_MIN_CONF", "0.0"))  # filter BUY/SELL on confidence
 
     # Load previous state if we want "on change" behavior
     state = load_state() if on_change else {}
@@ -228,17 +227,16 @@ def main():
 
             if isinstance(candles, dict) and candles.get("error"):
                 print(f"\n[{symbol}] Bitvavo error: {candles}")
-                summary.append((symbol, "ERROR", 0.0, "Bitvavo error"))
+                summary.append((symbol, "ERROR", 0.0, "Bitvavo error", "Bitvavo error"))
                 continue
 
             if not isinstance(candles, list) or len(candles) < 60:
-                print(f"\n[{symbol}] Not enough candle data returned (len={len(candles) if hasattr(candles,'__len__') else 'n/a'})")
-                summary.append((symbol, "ERROR", 0.0, "Not enough candle data"))
+                msg = f"Not enough candle data (len={len(candles) if hasattr(candles,'__len__') else 'n/a'})"
+                print(f"\n[{symbol}] {msg}")
+                summary.append((symbol, "ERROR", 0.0, msg, msg))
                 continue
 
             df = compute_indicators(to_df(candles))
-
-            # Ensure we take the most recent candle by timestamp
             df = df.sort_values("ts").reset_index(drop=True)
             last = df.iloc[-1].to_dict()
 
@@ -253,67 +251,58 @@ def main():
             }
 
             baseline = baseline_rule(snapshot)
+            ai = ai_advice({**snapshot, "baseline": baseline})
 
-        ai = ai_advice({**snapshot, "baseline": baseline})
+            # Normalize AI fields
+            action = (ai.get("action") or "HOLD").upper()
+            try:
+                conf = float(ai.get("confidence", 0.0))
+            except Exception:
+                conf = 0.0
+            ai_reason = str(ai.get("reason", "") or "")
 
-        # Normalize AI fields
-        action = (ai.get("action") or "HOLD").upper()
-        try:
-            conf = float(ai.get("confidence", 0.0))
-        except Exception:
-            conf = 0.0
-
-        reason = str(ai.get("reason", "") or "")
-
-        # If AI is disabled, don't leak that message into Telegram
-        if reason.startswith("AI disabled") or "missing OPENAI_API_KEY" in reason:
-            reason = baseline.get("reason", "No strong signal")
-
-
-#            ai = ai_advice({**snapshot, "baseline": baseline})
-#
-#            # Normalize AI fields
-#            action = (ai.get("action") or "HOLD").upper()
-#            try:
-#                conf = float(ai.get("confidence", 0.0))
-#            except Exception:
-#                conf = 0.0
-#            reason = str(ai.get("reason", ""))
+            # Telegram reason: never include the "AI disabled..." message
+            tg_reason = ai_reason
+            if ai_reason.startswith("AI disabled") or "missing OPENAI_API_KEY" in ai_reason:
+                tg_reason = baseline.get("reason", "No strong signal")
 
             print("\n" + "=" * 72)
             print(f"{symbol} | close={snapshot['close']} | ts={snapshot['timestamp_utc']}")
             print(f"RSI14={snapshot['rsi_14']} EMA20={snapshot['ema_20']} EMA50={snapshot['ema_50']}")
             print("- Baseline:", baseline)
-            print("- AI:", {"action": action, "confidence": conf, "reason": reason})
+            print("- AI:", {"action": action, "confidence": conf, "reason": ai_reason})
             print("=" * 72)
 
-            summary.append((symbol, action, conf, reason))
+            # Store: symbol, action, confidence, ai_reason(for logs), tg_reason(for telegram)
+            summary.append((symbol, action, conf, ai_reason, tg_reason))
 
         except Exception as e:
-            print(f"\n[{symbol}] Exception: {e}")
-            summary.append((symbol, "ERROR", 0.0, f"Exception: {e}"))
+            msg = f"Exception: {e}"
+            print(f"\n[{symbol}] {msg}")
+            summary.append((symbol, "ERROR", 0.0, msg, msg))
 
     # Console Summary
-    print("\n--- Summary (AI output) ---")
-    for sym, action, conf, reason in summary:
+    print("\n--- Summary ---")
+    for sym, action, conf, ai_reason, tg_reason in summary:
         conf_str = f"{conf:.2f}" if isinstance(conf, (int, float)) else "n/a"
-        short_reason = (reason or "").strip()
+        short_reason = (ai_reason or "").strip()
         if len(short_reason) > 120:
             short_reason = short_reason[:120] + "…"
         print(f"{sym:10s}  {action:5s}  conf={conf_str}  {short_reason}")
 
-    # Telegram summary (default: BUY/SELL/ERROR; optional HOLD)
+    # Telegram alert lines
     lines = []
-    for sym, action, conf, reason in summary:
+    for sym, action, conf, ai_reason, tg_reason in summary:
         prev = state.get(sym) if on_change else None
 
         if action == "ERROR":
-            lines.append(f"❗ {sym}: ERROR - {reason}")
+            lines.append(f"❗ {sym}: ERROR - {tg_reason}")
             state[sym] = action
             continue
 
-        # confidence filter (only applies to non-HOLD)
+        # confidence filter (only applies to BUY/SELL)
         if action in ("BUY", "SELL") and conf < conf_threshold:
+            state[sym] = action
             continue
 
         # Only send if changed
@@ -322,11 +311,11 @@ def main():
 
         # Default: don't spam HOLD
         if (not send_all) and action == "HOLD":
-            state[sym] = action  # still update state so we can detect HOLD->BUY later
+            state[sym] = action
             continue
 
         emoji = "🟢" if action == "BUY" else "🔴" if action == "SELL" else "⚪"
-        lines.append(f"{emoji} {sym}: {action} ({conf:.2f}) - {reason}")
+        lines.append(f"{emoji} {sym}: {action} ({conf:.2f}) - {tg_reason}")
         state[sym] = action
 
     if lines:
