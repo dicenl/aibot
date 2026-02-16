@@ -17,7 +17,7 @@ services:
       SYMBOL: "${SYMBOL:-BTC-EUR}"
       SYMBOLS: "${SYMBOLS:-}"
       INTERVAL: "${INTERVAL:-1h}"
-      CANDLE_LIMIT: "${CANDLE_LIMIT:-300}"
+      CANDLE_LIMIT: "${CANDLE_LIMIT:-500}"
       USE_AI: "${USE_AI:-false}"
 
       # === Telegram settings ===
