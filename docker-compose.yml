@@ -13,7 +13,7 @@ services:
       # === Bot settings ===
       SYMBOL: "${SYMBOL:-BTC-EUR}"
       INTERVAL: "${INTERVAL:-15m}"
-      CANDLE_LIMIT: "${CANDLE_LIMIT:-200}"
+      CANDLE_LIMIT: "${CANDLE_LIMIT:-300}"
       USE_AI: "${USE_AI:-false}"
 
       # === Scheduler loop ===

@@ -9,10 +9,14 @@ from ta.trend import EMAIndicator
 from python_bitvavo_api.bitvavo import Bitvavo
 
 
+# ----------------------------
+# Optional AI (second opinion)
+# ----------------------------
 def ai_advice(snapshot: dict) -> dict:
     """
     Optional AI second opinion.
-    Returns JSON dict: {"action":"BUY|SELL|HOLD","confidence":0..1,"reason":"..."}
+    Returns JSON dict:
+      {"action":"BUY|SELL|HOLD","confidence":0..1,"reason":"short"}
     Falls back to HOLD if disabled or error.
     """
     use_ai = os.getenv("USE_AI", "false").lower() == "true"
@@ -28,11 +32,12 @@ def ai_advice(snapshot: dict) -> dict:
         system = (
             "You are a conservative crypto trading advisor. "
             "Respond with strict JSON only: "
-            '{"action":"BUY|SELL|HOLD","confidence":0..1,"reason":"short"}'
+            '{"action":"BUY|SELL|HOLD","confidence":0..1,"reason":"short"} '
+            "Prefer HOLD if uncertain."
         )
+
         user = (
-            "Given this market snapshot, return ONE conservative action. "
-            "Prefer HOLD if uncertain.\n\n"
+            "Given this market snapshot, return ONE conservative action.\n\n"
             f"{json.dumps(snapshot, indent=2)}"
         )
 
@@ -45,12 +50,16 @@ def ai_advice(snapshot: dict) -> dict:
             temperature=0.2,
         )
 
-        content = resp.choices[0].message.content.strip()
+        content = (resp.choices[0].message.content or "").strip()
         return json.loads(content)
+
     except Exception as e:
         return {"action": "HOLD", "confidence": 0.40, "reason": f"AI error: {e}"}
 
 
+# ----------------------------
+# Data + indicators
+# ----------------------------
 def to_df(candles) -> pd.DataFrame:
     """
     Bitvavo candles: [timestamp, open, high, low, close, volume]
@@ -71,6 +80,9 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+# ----------------------------
+# Baseline strategy (simple)
+# ----------------------------
 def baseline_rule(s: dict) -> dict:
     """
     Conservative baseline:
@@ -94,9 +106,35 @@ def baseline_rule(s: dict) -> dict:
     return {"action": "HOLD", "confidence": 0.55, "reason": "No strong signal"}
 
 
+# ----------------------------
+# Helpers
+# ----------------------------
+def parse_symbols() -> list[str]:
+    """
+    Use SYMBOLS="ADA-EUR,ETC-EUR,..." if provided, otherwise fall back to SYMBOL.
+    """
+    symbols_env = os.getenv("SYMBOLS", "").strip()
+    if symbols_env:
+        symbols = [s.strip().upper() for s in symbols_env.split(",") if s.strip()]
+        return symbols
+    return [os.getenv("SYMBOL", "BTC-EUR").strip().upper()]
+
+
+def safe_float(x):
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return None
+    try:
+        return float(x)
+    except Exception:
+        return None
+
+
+# ----------------------------
+# Main
+# ----------------------------
 def main():
-    symbol = os.getenv("SYMBOL", "BTC-EUR")
-    interval = os.getenv("INTERVAL", "1h")
+    symbols = parse_symbols()
+    interval = os.getenv("INTERVAL", "1h").strip()
     limit = int(os.getenv("CANDLE_LIMIT", "300"))
 
     bitvavo = Bitvavo({
@@ -107,33 +145,67 @@ def main():
         "ACCESSWINDOW": 10000,
     })
 
-    candles = bitvavo.candles(symbol, interval, {"limit": limit})
-    if isinstance(candles, dict) and candles.get("error"):
-        raise RuntimeError(f"Bitvavo error: {candles}")
-
-    df = compute_indicators(to_df(candles))
-
-    last = df.iloc[-1].to_dict()
-    snapshot = {
-        "symbol": symbol,
-        "interval": interval,
-        "timestamp_utc": last["ts"].isoformat(),
-        "close": float(last["close"]),
-        "rsi_14": None if pd.isna(last["rsi_14"]) else float(last["rsi_14"]),
-        "ema_20": None if pd.isna(last["ema_20"]) else float(last["ema_20"]),
-        "ema_50": None if pd.isna(last["ema_50"]) else float(last["ema_50"]),
-    }
-
-    baseline = baseline_rule(snapshot)
-    ai = ai_advice({**snapshot, "baseline": baseline})
-
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    print("=" * 72)
-    print(f"{now} | {symbol} | interval={interval} | close={snapshot['close']}")
-    print(f"RSI14={snapshot['rsi_14']} EMA20={snapshot['ema_20']} EMA50={snapshot['ema_50']}")
-    print("- Baseline:", baseline)
-    print("- AI:", ai)
-    print("=" * 72)
+    print(f"\n=== CryptoBot run @ {now} | interval={interval} | limit={limit} | symbols={len(symbols)} ===")
+
+    summary = []
+
+    for symbol in symbols:
+        try:
+            candles = bitvavo.candles(symbol, interval, {"limit": limit})
+
+            # Bitvavo can return dict with error
+            if isinstance(candles, dict) and candles.get("error"):
+                err = candles
+                print(f"\n[{symbol}] Bitvavo error: {err}")
+                summary.append((symbol, "ERROR", 0.0, "Bitvavo error"))
+                continue
+
+            # Or sometimes empty list
+            if not isinstance(candles, list) or len(candles) < 60:
+                print(f"\n[{symbol}] Not enough candle data returned (len={len(candles) if hasattr(candles,'__len__') else 'n/a'})")
+                summary.append((symbol, "ERROR", 0.0, "Not enough candle data"))
+                continue
+
+            df = compute_indicators(to_df(candles))
+            last = df.iloc[-1].to_dict()
+
+            snapshot = {
+                "symbol": symbol,
+                "interval": interval,
+                "timestamp_utc": last["ts"].isoformat(),
+                "close": safe_float(last["close"]),
+                "rsi_14": safe_float(last.get("rsi_14")),
+                "ema_20": safe_float(last.get("ema_20")),
+                "ema_50": safe_float(last.get("ema_50")),
+            }
+
+            baseline = baseline_rule(snapshot)
+            ai = ai_advice({**snapshot, "baseline": baseline})
+
+            print("\n" + "=" * 72)
+            print(f"{symbol} | close={snapshot['close']} | ts={snapshot['timestamp_utc']}")
+            print(f"RSI14={snapshot['rsi_14']} EMA20={snapshot['ema_20']} EMA50={snapshot['ema_50']}")
+            print("- Baseline:", baseline)
+            print("- AI:", ai)
+            print("=" * 72)
+
+            summary.append((symbol, ai.get("action", "HOLD"), float(ai.get("confidence", 0.0)), ai.get("reason", "")))
+
+        except Exception as e:
+            print(f"\n[{symbol}] Exception: {e}")
+            summary.append((symbol, "ERROR", 0.0, f"Exception: {e}"))
+
+    # Summary table
+    print("\n--- Summary (AI output) ---")
+    for sym, action, conf, reason in summary:
+        conf_str = f"{conf:.2f}" if isinstance(conf, (int, float)) else "n/a"
+        short_reason = (reason or "").strip()
+        if len(short_reason) > 120:
+            short_reason = short_reason[:120] + "…"
+        print(f"{sym:10s}  {action:5s}  conf={conf_str}  {short_reason}")
+
+    print("--- End ---\n")
 
 
 if __name__ == "__main__":
