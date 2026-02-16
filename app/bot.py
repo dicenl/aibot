@@ -221,6 +221,17 @@ def main():
             print(f"\n[{symbol}] Exception: {e}")
             summary.append((symbol, "ERROR", 0.0, f"Exception: {e}"))
 
+    # Summary table
+    print("\n--- Summary (AI output) ---")
+    for sym, action, conf, reason in summary:
+        conf_str = f"{conf:.2f}" if isinstance(conf, (int, float)) else "n/a"
+        short_reason = (reason or "").strip()
+        if len(short_reason) > 120:
+            short_reason = short_reason[:120] + "…"
+        print(f"{sym:10s}  {action:5s}  conf={conf_str}  {short_reason}")
+
+    print("--- End ---\n")
+
 # Send Telegram summary (only non-HOLD by default, unless you want all)
 send_all = os.getenv("TELEGRAM_SEND_ALL", "false").lower() == "true"
 
@@ -236,19 +247,6 @@ for sym, action, conf, reason in summary:
 if lines:
     header = f"📊 CryptoBot {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} ({interval})"
     telegram_send(header + "\n" + "\n".join(lines))
-
-
-
-    # Summary table
-    print("\n--- Summary (AI output) ---")
-    for sym, action, conf, reason in summary:
-        conf_str = f"{conf:.2f}" if isinstance(conf, (int, float)) else "n/a"
-        short_reason = (reason or "").strip()
-        if len(short_reason) > 120:
-            short_reason = short_reason[:120] + "…"
-        print(f"{sym:10s}  {action:5s}  conf={conf_str}  {short_reason}")
-
-    print("--- End ---\n")
 
 
 if __name__ == "__main__":
