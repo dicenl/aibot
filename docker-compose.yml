@@ -1,5 +1,6 @@
 services:
   cryptobot:
+    user: "0:0"
     build: .
     container_name: cryptobot
     volumes:
@@ -15,7 +16,7 @@ services:
       # === Bot settings ===
       SYMBOL: "${SYMBOL:-BTC-EUR}"
       SYMBOLS: "${SYMBOLS:-}"
-      INTERVAL: "${INTERVAL:-15m}"
+      INTERVAL: "${INTERVAL:-1h}"
       CANDLE_LIMIT: "${CANDLE_LIMIT:-300}"
       USE_AI: "${USE_AI:-false}"
 
@@ -27,7 +28,7 @@ services:
 
 
       # === Scheduler loop ===
-      RUN_EVERY_SECONDS: "${RUN_EVERY_SECONDS:-900}"
+      RUN_EVERY_SECONDS: "${RUN_EVERY_SECONDS:-3600}"
     restart: unless-stopped
 
 volumes:
