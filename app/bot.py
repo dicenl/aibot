@@ -253,15 +253,33 @@ def main():
             }
 
             baseline = baseline_rule(snapshot)
-            ai = ai_advice({**snapshot, "baseline": baseline})
 
-            # Normalize AI fields
-            action = (ai.get("action") or "HOLD").upper()
-            try:
-                conf = float(ai.get("confidence", 0.0))
-            except Exception:
-                conf = 0.0
-            reason = str(ai.get("reason", ""))
+# == Aanpassing om ai melding te filteren
+ai = ai_advice({**snapshot, "baseline": baseline})
+
+# Normalize AI fields
+action = (ai.get("action") or "HOLD").upper()
+try:
+    conf = float(ai.get("confidence", 0.0))
+except Exception:
+    conf = 0.0
+
+reason = str(ai.get("reason", "") or "")
+
+# If AI is effectively disabled, don't leak that message into Telegram.
+if reason.startswith("AI disabled") or "missing OPENAI_API_KEY" in reason:
+    # fall back to baseline reason
+    reason = baseline.get("reason", "No strong signal")
+
+#            ai = ai_advice({**snapshot, "baseline": baseline})
+#
+#            # Normalize AI fields
+#            action = (ai.get("action") or "HOLD").upper()
+#            try:
+#                conf = float(ai.get("confidence", 0.0))
+#            except Exception:
+#                conf = 0.0
+#            reason = str(ai.get("reason", ""))
 
             print("\n" + "=" * 72)
             print(f"{symbol} | close={snapshot['close']} | ts={snapshot['timestamp_utc']}")
