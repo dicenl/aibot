@@ -12,6 +12,7 @@ services:
 
       # === Bot settings ===
       SYMBOL: "${SYMBOL:-BTC-EUR}"
+      SYMBOLS: "${SYMBOLS:-}"
       INTERVAL: "${INTERVAL:-15m}"
       CANDLE_LIMIT: "${CANDLE_LIMIT:-300}"
       USE_AI: "${USE_AI:-false}"
