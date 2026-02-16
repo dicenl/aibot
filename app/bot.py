@@ -10,9 +10,69 @@ from ta.trend import EMAIndicator
 from python_bitvavo_api.bitvavo import Bitvavo
 
 
-# ----------------------------
+# =========================
+# Config helpers
+# =========================
+def env_bool(name: str, default: bool = False) -> bool:
+    v = os.getenv(name, str(default)).strip().lower()
+    return v in ("1", "true", "yes", "y", "on")
+
+
+def parse_symbols() -> list[str]:
+    """
+    Use SYMBOLS="ADA-EUR,ETC-EUR,..." if provided, otherwise fall back to SYMBOL.
+    """
+    symbols_env = os.getenv("SYMBOLS", "").strip()
+    if symbols_env:
+        return [s.strip().upper() for s in symbols_env.split(",") if s.strip()]
+    return [os.getenv("SYMBOL", "BTC-EUR").strip().upper()]
+
+
+def safe_float(x):
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return None
+    try:
+        return float(x)
+    except Exception:
+        return None
+
+
+# =========================
+# Telegram
+# =========================
+def telegram_send(message: str) -> bool:
+    enabled = env_bool("TELEGRAM_ENABLED", True)
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+
+    if not enabled:
+        return False
+    if not token or not chat_id:
+        # Don't raise; just make it obvious in logs
+        print("Telegram not sent: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing")
+        return False
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": message,
+        "disable_web_page_preview": True,
+    }
+
+    try:
+        r = requests.post(url, json=payload, timeout=10)
+        if r.status_code != 200:
+            print(f"Telegram send failed: {r.status_code} {r.text}")
+            return False
+        return True
+    except Exception as e:
+        print(f"Telegram send exception: {e}")
+        return False
+
+
+# =========================
 # Optional AI (second opinion)
-# ----------------------------
+# =========================
 def ai_advice(snapshot: dict) -> dict:
     """
     Optional AI second opinion.
@@ -20,7 +80,7 @@ def ai_advice(snapshot: dict) -> dict:
       {"action":"BUY|SELL|HOLD","confidence":0..1,"reason":"short"}
     Falls back to HOLD if disabled or error.
     """
-    use_ai = os.getenv("USE_AI", "false").lower() == "true"
+    use_ai = env_bool("USE_AI", False)
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
 
     if not use_ai or not api_key:
@@ -58,9 +118,35 @@ def ai_advice(snapshot: dict) -> dict:
         return {"action": "HOLD", "confidence": 0.40, "reason": f"AI error: {e}"}
 
 
-# ----------------------------
+# =========================
+# State (for on-change alerts)
+# =========================
+def load_state() -> dict:
+    """
+    Loads last actions per symbol from STATE_FILE.
+    Default location: /data/state.json (bind a volume to /data!)
+    """
+    path = os.getenv("STATE_FILE", "/data/state.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_state(state: dict) -> None:
+    path = os.getenv("STATE_FILE", "/data/state.json")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2, sort_keys=True)
+    except Exception as e:
+        print(f"Warning: could not save state to {path}: {e}")
+
+
+# =========================
 # Data + indicators
-# ----------------------------
+# =========================
 def to_df(candles) -> pd.DataFrame:
     """
     Bitvavo candles: [timestamp, open, high, low, close, volume]
@@ -81,9 +167,9 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# ----------------------------
+# =========================
 # Baseline strategy (simple)
-# ----------------------------
+# =========================
 def baseline_rule(s: dict) -> dict:
     """
     Conservative baseline:
@@ -107,59 +193,21 @@ def baseline_rule(s: dict) -> dict:
     return {"action": "HOLD", "confidence": 0.55, "reason": "No strong signal"}
 
 
-# ----------------------------
-# Helpers
-# ----------------------------
-def parse_symbols() -> list[str]:
-    """
-    Use SYMBOLS="ADA-EUR,ETC-EUR,..." if provided, otherwise fall back to SYMBOL.
-    """
-    symbols_env = os.getenv("SYMBOLS", "").strip()
-    if symbols_env:
-        return [s.strip().upper() for s in symbols_env.split(",") if s.strip()]
-    return [os.getenv("SYMBOL", "BTC-EUR").strip().upper()]
-
-
-def safe_float(x):
-    if x is None or (isinstance(x, float) and pd.isna(x)):
-        return None
-    try:
-        return float(x)
-    except Exception:
-        return None
-
-
-# ----------------------------
-# Telegram
-# ----------------------------
-def telegram_send(message: str) -> bool:
-    enabled = os.getenv("TELEGRAM_ENABLED", "true").lower() == "true"
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-
-    if not enabled or not token or not chat_id:
-        return False
-
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": message,
-        "disable_web_page_preview": True,
-    }
-    try:
-        r = requests.post(url, json=payload, timeout=10)
-        return r.status_code == 200
-    except Exception:
-        return False
-
-
-# ----------------------------
+# =========================
 # Main
-# ----------------------------
+# =========================
 def main():
     symbols = parse_symbols()
     interval = os.getenv("INTERVAL", "1h").strip()
     limit = int(os.getenv("CANDLE_LIMIT", "300"))
+
+    # Telegram behavior
+    send_all = env_bool("TELEGRAM_SEND_ALL", False)         # send HOLD too
+    on_change = env_bool("TELEGRAM_ON_CHANGE", True)        # only alert if action changed
+    conf_threshold = float(os.getenv("TELEGRAM_MIN_CONF", "0.0"))  # filter on AI confidence
+
+    # Load previous state if we want "on change" behavior
+    state = load_state() if on_change else {}
 
     bitvavo = Bitvavo({
         "APIKEY": os.getenv("BITVAVO_API_KEY", ""),
@@ -189,6 +237,9 @@ def main():
                 continue
 
             df = compute_indicators(to_df(candles))
+
+            # Ensure we take the most recent candle by timestamp
+            df = df.sort_values("ts").reset_index(drop=True)
             last = df.iloc[-1].to_dict()
 
             snapshot = {
@@ -204,20 +255,28 @@ def main():
             baseline = baseline_rule(snapshot)
             ai = ai_advice({**snapshot, "baseline": baseline})
 
+            # Normalize AI fields
+            action = (ai.get("action") or "HOLD").upper()
+            try:
+                conf = float(ai.get("confidence", 0.0))
+            except Exception:
+                conf = 0.0
+            reason = str(ai.get("reason", ""))
+
             print("\n" + "=" * 72)
             print(f"{symbol} | close={snapshot['close']} | ts={snapshot['timestamp_utc']}")
             print(f"RSI14={snapshot['rsi_14']} EMA20={snapshot['ema_20']} EMA50={snapshot['ema_50']}")
             print("- Baseline:", baseline)
-            print("- AI:", ai)
+            print("- AI:", {"action": action, "confidence": conf, "reason": reason})
             print("=" * 72)
 
-            summary.append((symbol, ai.get("action", "HOLD"), float(ai.get("confidence", 0.0)), ai.get("reason", "")))
+            summary.append((symbol, action, conf, reason))
 
         except Exception as e:
             print(f"\n[{symbol}] Exception: {e}")
             summary.append((symbol, "ERROR", 0.0, f"Exception: {e}"))
 
-    # Summary table
+    # Console Summary
     print("\n--- Summary (AI output) ---")
     for sym, action, conf, reason in summary:
         conf_str = f"{conf:.2f}" if isinstance(conf, (int, float)) else "n/a"
@@ -226,21 +285,41 @@ def main():
             short_reason = short_reason[:120] + "…"
         print(f"{sym:10s}  {action:5s}  conf={conf_str}  {short_reason}")
 
-    # Telegram summary (default: only BUY/SELL/ERROR)
-    send_all = os.getenv("TELEGRAM_SEND_ALL", "false").lower() == "true"
+    # Telegram summary (default: BUY/SELL/ERROR; optional HOLD)
     lines = []
     for sym, action, conf, reason in summary:
+        prev = state.get(sym) if on_change else None
+
         if action == "ERROR":
             lines.append(f"❗ {sym}: ERROR - {reason}")
+            state[sym] = action
             continue
+
+        # confidence filter (only applies to non-HOLD)
+        if action in ("BUY", "SELL") and conf < conf_threshold:
+            continue
+
+        # Only send if changed
+        if on_change and prev == action:
+            continue
+
+        # Default: don't spam HOLD
         if (not send_all) and action == "HOLD":
+            state[sym] = action  # still update state so we can detect HOLD->BUY later
             continue
-        lines.append(f"{sym}: {action} ({conf:.2f}) - {reason}")
+
+        emoji = "🟢" if action == "BUY" else "🔴" if action == "SELL" else "⚪"
+        lines.append(f"{emoji} {sym}: {action} ({conf:.2f}) - {reason}")
+        state[sym] = action
 
     if lines:
         header = f"📊 CryptoBot {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} ({interval})"
         ok = telegram_send(header + "\n" + "\n".join(lines))
         print(f"Telegram sent: {ok}")
+
+    # Persist state (for on-change)
+    if on_change:
+        save_state(state)
 
     print("--- End ---\n")
 
