@@ -2,6 +2,8 @@ services:
   cryptobot:
     build: .
     container_name: cryptobot
+    volumes:
+      - cryptobot-data:/data
     environment:
       # === Bitvavo ===
       BITVAVO_API_KEY: "${BITVAVO_API_KEY}"
@@ -27,3 +29,6 @@ services:
       # === Scheduler loop ===
       RUN_EVERY_SECONDS: "${RUN_EVERY_SECONDS:-900}"
     restart: unless-stopped
+
+volumes:
+  cryptobot-data:
