@@ -179,11 +179,11 @@ def baseline_rule(s: dict) -> dict:
         }
 
     # SELL: take profit in uptrend ONLY if stretched above EMA20 AND EMA20 rising enough
-    if in_uptrend and slope >= min_up_slope and rsi > tp_rsi and dist >= tp_pct:
+    if in_uptrend and slope >= min_up_slope and rsi > tp_rsi and dist_ema20_pct >= tp_pct:
         return {
             "action": "SELL",
             "confidence": 0.68,
-            "reason": f"Overbought + stretched (+{dist:.1f}%>EMA20, slope +{slope:.2f}%)"
+            "reason": f"Overbought + stretched (+{dist_ema20_pct:.1f}%>EMA20, slope +{slope:.2f}%)"
         }
 
     # SELL: weakness in downtrend ONLY if EMA20 falling enough
@@ -261,7 +261,7 @@ def main():
 
             ema20_prev = float(prev_row["ema_20"])
             slope = ((ema20_now / ema20_prev) - 1.0) * 100.0 if ema20_prev else 0.0
-            dist = ((close / ema20_now) - 1.0) * 100.0 if ema20_now else 0.0
+            dist_ema20_pct = ((close / ema20_now) - 1.0) * 100.0 if ema20_now else 0.0
 
             snapshot = {
                 "symbol": symbol,
@@ -272,7 +272,7 @@ def main():
                 "ema_20": ema20_now,
                 "ema_50": ema50_now,
                 "ema20_slope_pct": slope,
-                "dist_ema20_pct": dist,
+                "dist_ema20_pct": dist_ema20_pct,
             }
 
             baseline = baseline_rule(snapshot)
