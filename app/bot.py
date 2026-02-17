@@ -25,15 +25,6 @@ def parse_symbols() -> list[str]:
     return [os.getenv("SYMBOL", "BTC-EUR").strip().upper()]
 
 
-def safe_float(x):
-    if x is None or (isinstance(x, float) and pd.isna(x)):
-        return None
-    try:
-        return float(x)
-    except Exception:
-        return None
-
-
 # =========================
 # Telegram
 # =========================
@@ -62,7 +53,7 @@ def telegram_send(message: str) -> bool:
 
 
 # =========================
-# AI (optional)
+# Optional AI
 # =========================
 def ai_advice(snapshot: dict) -> dict:
     use_ai = env_bool("USE_AI", False)
@@ -135,17 +126,23 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # =========================
-# Baseline with EMA20 slope + stretch TP
+# Baseline strategy
 # =========================
 def baseline_rule(s: dict) -> dict:
+    """
+    BUY: dip in uptrend + EMA20 slope positive enough
+    SELL TP: overbought in uptrend + stretched above EMA20 by X% + EMA20 slope positive enough
+    SELL DT: weakness in downtrend + EMA20 slope negative enough
+    """
     rsi = s.get("rsi_14")
     ema20 = s.get("ema_20")
     ema50 = s.get("ema_50")
     close = s.get("close")
-    slope = s.get("ema20_slope_pct")
+    ema20_slope_pct = s.get("ema20_slope_pct")
     dist_ema20_pct = s.get("dist_ema20_pct")
 
-    if rsi is None or ema20 is None or ema50 is None or close is None or slope is None or dist is None:
+    if (rsi is None or ema20 is None or ema50 is None or close is None
+            or ema20_slope_pct is None or dist_ema20_pct is None):
         return {"action": "HOLD", "confidence": 0.40, "reason": "Not enough indicator history"}
 
     buy_rsi = float(os.getenv("BUY_RSI", "35"))
@@ -159,39 +156,28 @@ def baseline_rule(s: dict) -> dict:
     in_uptrend = ema20 > ema50
     in_downtrend = ema20 < ema50
 
-    # BUY: dip in uptrend AND EMA20 rising enough
-    if in_uptrend and slope >= min_up_slope and rsi < buy_rsi:
+    # BUY
+    if in_uptrend and ema20_slope_pct >= min_up_slope and rsi < buy_rsi:
         return {
             "action": "BUY",
             "confidence": 0.72,
-            "reason": f"Dip in uptrend (RSI<{buy_rsi:g}, slope +{slope:.2f}%)"
+            "reason": f"Dip in uptrend (RSI<{buy_rsi:g}, slope +{ema20_slope_pct:.2f}%)"
         }
 
-    # SELL: blow-off top (extreme overbought, even if slope turning)
-    extreme_rsi = float(os.getenv("EXTREME_TP_RSI", "80"))
-    extreme_tp_pct = float(os.getenv("EXTREME_TP_PCT", "5.0"))
-
-    if ema20 > ema50 and rsi > extreme_rsi and dist_ema20_pct >= extreme_tp_pct:
-        return {
-            "action": "SELL",
-            "confidence": 0.75,
-            "reason": f"Blow-off top (RSI>{extreme_rsi:g} & +{dist_ema20_pct:.1f}%>EMA20)"
-        }
-
-    # SELL: take profit in uptrend ONLY if stretched above EMA20 AND EMA20 rising enough
-    if in_uptrend and slope >= min_up_slope and rsi > tp_rsi and dist_ema20_pct >= tp_pct:
+    # SELL take profit
+    if in_uptrend and ema20_slope_pct >= min_up_slope and rsi > tp_rsi and dist_ema20_pct >= tp_pct:
         return {
             "action": "SELL",
             "confidence": 0.68,
-            "reason": f"Overbought + stretched (+{dist_ema20_pct:.1f}%>EMA20, slope +{slope:.2f}%)"
+            "reason": f"Overbought + stretched (+{dist_ema20_pct:.1f}%>EMA20, slope +{ema20_slope_pct:.2f}%)"
         }
 
-    # SELL: weakness in downtrend ONLY if EMA20 falling enough
-    if in_downtrend and slope <= -min_down_slope and rsi < down_sell_rsi:
+    # SELL downtrend weakness
+    if in_downtrend and ema20_slope_pct <= -min_down_slope and rsi < down_sell_rsi:
         return {
             "action": "SELL",
             "confidence": 0.60,
-            "reason": f"Weak in downtrend (RSI<{down_sell_rsi:g}, slope {slope:.2f}%)"
+            "reason": f"Weak in downtrend (RSI<{down_sell_rsi:g}, slope {ema20_slope_pct:.2f}%)"
         }
 
     return {"action": "HOLD", "confidence": 0.55, "reason": "No strong signal"}
@@ -208,7 +194,6 @@ def main():
     send_all = env_bool("TELEGRAM_SEND_ALL", False)
     on_change = env_bool("TELEGRAM_ON_CHANGE", True)
     conf_threshold = float(os.getenv("TELEGRAM_MIN_CONF", "0.0"))
-
     slope_n = int(os.getenv("EMA_SLOPE_LOOKBACK", "5"))
 
     state = load_state() if on_change else {}
@@ -260,7 +245,7 @@ def main():
             rsi = float(last_row["rsi_14"])
 
             ema20_prev = float(prev_row["ema_20"])
-            slope = ((ema20_now / ema20_prev) - 1.0) * 100.0 if ema20_prev else 0.0
+            ema20_slope_pct = ((ema20_now / ema20_prev) - 1.0) * 100.0 if ema20_prev else 0.0
             dist_ema20_pct = ((close / ema20_now) - 1.0) * 100.0 if ema20_now else 0.0
 
             snapshot = {
@@ -271,7 +256,7 @@ def main():
                 "rsi_14": rsi,
                 "ema_20": ema20_now,
                 "ema_50": ema50_now,
-                "ema20_slope_pct": slope,
+                "ema20_slope_pct": ema20_slope_pct,
                 "dist_ema20_pct": dist_ema20_pct,
             }
 
@@ -285,17 +270,17 @@ def main():
                 conf = 0.0
             ai_reason = str(ai.get("reason", "") or "")
 
-            # Telegram reason: never send AI-disabled text
+            # Telegram reason: never send AI-disabled message
             if ai_reason.startswith("AI disabled") or "missing OPENAI_API_KEY" in ai_reason:
                 tg_reason = baseline.get("reason", "No strong signal")
             else:
                 tg_reason = ai_reason or baseline.get("reason", "No strong signal")
 
-            # Log per coin
             print(
-                f"[{symbol}] close={close:.4f} RSI={rsi:.2f} "
-                f"EMA20={ema20_now:.4f} EMA50={ema50_now:.4f} "
-                f"dist={dist:.2f}% slope={slope:.2f}% -> {action} ({conf:.2f}) | {tg_reason}"
+                f"[{symbol}] close={close:.8f} RSI={rsi:.2f} "
+                f"EMA20={ema20_now:.8f} EMA50={ema50_now:.8f} "
+                f"dist={dist_ema20_pct:.2f}% slope={ema20_slope_pct:.2f}% "
+                f"-> {action} ({conf:.2f}) | {tg_reason}"
             )
 
             summary.append((symbol, action, conf, tg_reason))
@@ -305,7 +290,7 @@ def main():
             print(f"[{symbol}] {msg}")
             summary.append((symbol, "ERROR", 0.0, msg))
 
-    # Build Telegram lines
+    # Telegram lines
     lines = []
     for sym, action, conf, reason in summary:
         prev = state.get(sym) if on_change else None
@@ -315,7 +300,6 @@ def main():
             state[sym] = action
             continue
 
-        # Optional confidence filter for BUY/SELL (useful when AI on later)
         if action in ("BUY", "SELL") and conf < conf_threshold:
             state[sym] = action
             continue
