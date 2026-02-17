@@ -167,6 +167,17 @@ def baseline_rule(s: dict) -> dict:
             "reason": f"Dip in uptrend (RSI<{buy_rsi:g}, slope +{slope:.2f}%)"
         }
 
+    # SELL: blow-off top (extreme overbought, even if slope turning)
+    extreme_rsi = float(os.getenv("EXTREME_TP_RSI", "80"))
+    extreme_tp_pct = float(os.getenv("EXTREME_TP_PCT", "5.0"))
+
+    if ema20 > ema50 and rsi > extreme_rsi and dist_ema20_pct >= extreme_tp_pct:
+        return {
+            "action": "SELL",
+            "confidence": 0.75,
+            "reason": f"Blow-off top (RSI>{extreme_rsi:g} & +{dist_ema20_pct:.1f}%>EMA20)"
+        }
+
     # SELL: take profit in uptrend ONLY if stretched above EMA20 AND EMA20 rising enough
     if in_uptrend and slope >= min_up_slope and rsi > tp_rsi and dist >= tp_pct:
         return {
