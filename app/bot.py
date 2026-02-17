@@ -11,7 +11,7 @@ from python_bitvavo_api.bitvavo import Bitvavo
 
 
 # =========================
-# Config helpers
+# Helpers
 # =========================
 def env_bool(name: str, default: bool = False) -> bool:
     v = os.getenv(name, str(default)).strip().lower()
@@ -42,19 +42,22 @@ def telegram_send(message: str) -> bool:
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
-    if not enabled or not token or not chat_id:
+    if not enabled:
+        return False
+    if not token or not chat_id:
+        print("Telegram: missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID")
         return False
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": message,
-        "disable_web_page_preview": True,
-    }
+    payload = {"chat_id": chat_id, "text": message, "disable_web_page_preview": True}
     try:
         r = requests.post(url, json=payload, timeout=10)
-        return r.status_code == 200
-    except Exception:
+        if r.status_code != 200:
+            print(f"Telegram send failed: {r.status_code} {r.text}")
+            return False
+        return True
+    except Exception as e:
+        print(f"Telegram send exception: {e}")
         return False
 
 
@@ -64,19 +67,23 @@ def telegram_send(message: str) -> bool:
 def ai_advice(snapshot: dict) -> dict:
     use_ai = env_bool("USE_AI", False)
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
+
     if not use_ai or not api_key:
         return {"action": "HOLD", "confidence": 0.50, "reason": "AI disabled or missing OPENAI_API_KEY"}
+
     try:
         from openai import OpenAI
         client = OpenAI(api_key=api_key)
+
         resp = client.chat.completions.create(
             model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
             messages=[
                 {"role": "system", "content":
                  "You are a conservative crypto trading advisor. "
                  "Respond with strict JSON only: "
-                 '{"action":"BUY|SELL|HOLD","confidence":0..1,"reason":"short"}'},
-                {"role": "user", "content": json.dumps(snapshot)}
+                 '{"action":"BUY|SELL|HOLD","confidence":0..1,"reason":"short"} '
+                 "Prefer HOLD if uncertain."},
+                {"role": "user", "content": json.dumps(snapshot, indent=2)},
             ],
             temperature=0.2,
         )
@@ -136,29 +143,45 @@ def baseline_rule(s: dict) -> dict:
     ema50 = s.get("ema_50")
     close = s.get("close")
     slope = s.get("ema20_slope_pct")
+    dist = s.get("dist_ema20_pct")
 
-    if rsi is None or ema20 is None or ema50 is None or close is None or slope is None:
+    if rsi is None or ema20 is None or ema50 is None or close is None or slope is None or dist is None:
         return {"action": "HOLD", "confidence": 0.40, "reason": "Not enough indicator history"}
 
     buy_rsi = float(os.getenv("BUY_RSI", "35"))
     tp_rsi = float(os.getenv("TP_RSI", "70"))
     tp_pct = float(os.getenv("TAKE_PROFIT_PCT", "2.5"))
     down_sell_rsi = float(os.getenv("DOWN_SELL_RSI", "45"))
+
     min_up_slope = float(os.getenv("EMA_SLOPE_MIN_UP", "0.15"))
     min_down_slope = float(os.getenv("EMA_SLOPE_MIN_DOWN", "0.15"))
 
     in_uptrend = ema20 > ema50
     in_downtrend = ema20 < ema50
-    dist_ema20_pct = ((close / ema20) - 1.0) * 100.0 if ema20 else 0.0
 
+    # BUY: dip in uptrend AND EMA20 rising enough
     if in_uptrend and slope >= min_up_slope and rsi < buy_rsi:
-        return {"action": "BUY", "confidence": 0.72, "reason": "Dip in uptrend"}
+        return {
+            "action": "BUY",
+            "confidence": 0.72,
+            "reason": f"Dip in uptrend (RSI<{buy_rsi:g}, slope +{slope:.2f}%)"
+        }
 
-    if in_uptrend and slope >= min_up_slope and rsi > tp_rsi and dist_ema20_pct >= tp_pct:
-        return {"action": "SELL", "confidence": 0.68, "reason": "Overbought + stretched"}
+    # SELL: take profit in uptrend ONLY if stretched above EMA20 AND EMA20 rising enough
+    if in_uptrend and slope >= min_up_slope and rsi > tp_rsi and dist >= tp_pct:
+        return {
+            "action": "SELL",
+            "confidence": 0.68,
+            "reason": f"Overbought + stretched (+{dist:.1f}%>EMA20, slope +{slope:.2f}%)"
+        }
 
+    # SELL: weakness in downtrend ONLY if EMA20 falling enough
     if in_downtrend and slope <= -min_down_slope and rsi < down_sell_rsi:
-        return {"action": "SELL", "confidence": 0.60, "reason": "Weak in downtrend"}
+        return {
+            "action": "SELL",
+            "confidence": 0.60,
+            "reason": f"Weak in downtrend (RSI<{down_sell_rsi:g}, slope {slope:.2f}%)"
+        }
 
     return {"action": "HOLD", "confidence": 0.55, "reason": "No strong signal"}
 
@@ -170,8 +193,13 @@ def main():
     symbols = parse_symbols()
     interval = os.getenv("INTERVAL", "1h").strip()
     limit = int(os.getenv("CANDLE_LIMIT", "300"))
+
     send_all = env_bool("TELEGRAM_SEND_ALL", False)
     on_change = env_bool("TELEGRAM_ON_CHANGE", True)
+    conf_threshold = float(os.getenv("TELEGRAM_MIN_CONF", "0.0"))
+
+    slope_n = int(os.getenv("EMA_SLOPE_LOOKBACK", "5"))
+
     state = load_state() if on_change else {}
 
     bitvavo = Bitvavo({
@@ -182,37 +210,58 @@ def main():
         "ACCESSWINDOW": 10000,
     })
 
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    print(f"\n=== CryptoBot run @ {now} | interval={interval} | limit={limit} | symbols={len(symbols)} | slope_n={slope_n} ===")
+
     summary = []
 
     for symbol in symbols:
         try:
             candles = bitvavo.candles(symbol, interval, {"limit": limit})
-            if not isinstance(candles, list) or len(candles) < 60:
+
+            if isinstance(candles, dict) and candles.get("error"):
+                msg = f"Bitvavo error: {candles}"
+                print(f"[{symbol}] {msg}")
+                summary.append((symbol, "ERROR", 0.0, msg))
+                continue
+
+            if not isinstance(candles, list) or len(candles) < 80:
+                msg = f"Not enough candles (len={len(candles) if hasattr(candles,'__len__') else 'n/a'})"
+                print(f"[{symbol}] {msg}")
+                summary.append((symbol, "ERROR", 0.0, msg))
                 continue
 
             df = compute_indicators(to_df(candles)).sort_values("ts").reset_index(drop=True)
             df_ok = df.dropna(subset=["rsi_14", "ema_20", "ema_50"])
 
-            slope_n = int(os.getenv("EMA_SLOPE_LOOKBACK", "5"))
             if len(df_ok) <= slope_n:
+                msg = "Not enough indicator history (for EMA slope)"
+                print(f"[{symbol}] {msg}")
+                summary.append((symbol, "ERROR", 0.0, msg))
                 continue
 
             last_row = df_ok.iloc[-1]
             prev_row = df_ok.iloc[-1 - slope_n]
 
+            close = float(last_row["close"])
             ema20_now = float(last_row["ema_20"])
+            ema50_now = float(last_row["ema_50"])
+            rsi = float(last_row["rsi_14"])
+
             ema20_prev = float(prev_row["ema_20"])
             slope = ((ema20_now / ema20_prev) - 1.0) * 100.0 if ema20_prev else 0.0
+            dist = ((close / ema20_now) - 1.0) * 100.0 if ema20_now else 0.0
 
             snapshot = {
                 "symbol": symbol,
                 "interval": interval,
                 "timestamp_utc": last_row["ts"].isoformat(),
-                "close": safe_float(last_row["close"]),
-                "rsi_14": safe_float(last_row["rsi_14"]),
-                "ema_20": safe_float(last_row["ema_20"]),
-                "ema_50": safe_float(last_row["ema_50"]),
-                "ema20_slope_pct": safe_float(slope),
+                "close": close,
+                "rsi_14": rsi,
+                "ema_20": ema20_now,
+                "ema_50": ema50_now,
+                "ema20_slope_pct": slope,
+                "dist_ema20_pct": dist,
             }
 
             baseline = baseline_rule(snapshot)
@@ -224,36 +273,63 @@ def main():
             except Exception:
                 conf = 0.0
             ai_reason = str(ai.get("reason", "") or "")
-            tg_reason = baseline.get("reason", "No strong signal") \
-                if ai_reason.startswith("AI disabled") else ai_reason
+
+            # Telegram reason: never send AI-disabled text
+            if ai_reason.startswith("AI disabled") or "missing OPENAI_API_KEY" in ai_reason:
+                tg_reason = baseline.get("reason", "No strong signal")
+            else:
+                tg_reason = ai_reason or baseline.get("reason", "No strong signal")
+
+            # Log per coin
+            print(
+                f"[{symbol}] close={close:.4f} RSI={rsi:.2f} "
+                f"EMA20={ema20_now:.4f} EMA50={ema50_now:.4f} "
+                f"dist={dist:.2f}% slope={slope:.2f}% -> {action} ({conf:.2f}) | {tg_reason}"
+            )
 
             summary.append((symbol, action, conf, tg_reason))
 
         except Exception as e:
-            summary.append((symbol, "ERROR", 0.0, str(e)))
+            msg = f"Exception: {e}"
+            print(f"[{symbol}] {msg}")
+            summary.append((symbol, "ERROR", 0.0, msg))
 
+    # Build Telegram lines
     lines = []
     for sym, action, conf, reason in summary:
         prev = state.get(sym) if on_change else None
+
         if action == "ERROR":
             lines.append(f"❗ {sym}: ERROR - {reason}")
             state[sym] = action
             continue
+
+        # Optional confidence filter for BUY/SELL (useful when AI on later)
+        if action in ("BUY", "SELL") and conf < conf_threshold:
+            state[sym] = action
+            continue
+
         if on_change and prev == action:
             continue
+
         if (not send_all) and action == "HOLD":
             state[sym] = action
             continue
+
         emoji = "🟢" if action == "BUY" else "🔴" if action == "SELL" else "⚪"
         lines.append(f"{emoji} {sym}: {action} ({conf:.2f}) - {reason}")
         state[sym] = action
 
     if lines:
         header = f"📊 CryptoBot {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} ({interval})"
-        telegram_send(header + "\n" + "\n".join(lines))
+        ok = telegram_send(header + "\n" + "\n".join(lines))
+        print(f"Telegram sent: {ok} | lines={len(lines)}")
+    else:
+        print("Telegram: nothing to send (on-change and/or HOLD filtered)")
 
     if on_change:
         save_state(state)
+        print(f"State saved: {os.getenv('STATE_FILE','/data/state.json')}")
 
 
 if __name__ == "__main__":
