@@ -143,7 +143,7 @@ def baseline_rule(s: dict) -> dict:
     ema50 = s.get("ema_50")
     close = s.get("close")
     slope = s.get("ema20_slope_pct")
-    dist = s.get("dist_ema20_pct")
+    dist_ema20_pct = s.get("dist_ema20_pct")
 
     if rsi is None or ema20 is None or ema50 is None or close is None or slope is None or dist is None:
         return {"action": "HOLD", "confidence": 0.40, "reason": "Not enough indicator history"}
