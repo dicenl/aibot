@@ -171,10 +171,10 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
 # =========================
 def baseline_rule(s: dict) -> dict:
     """
-    Conservative baseline:
-    - BUY: RSI < 30 AND EMA20 > EMA50 (oversold pullback in uptrend)
-    - SELL: RSI > 70 AND EMA20 < EMA50 (overbought bounce in downtrend)
-    - else HOLD
+    Improved baseline:
+    BUY  = Dip in uptrend
+    SELL = Take profit in uptrend OR weakness in downtrend
+    HOLD = Otherwise
     """
     rsi = s.get("rsi_14")
     ema20 = s.get("ema_20")
@@ -183,11 +183,17 @@ def baseline_rule(s: dict) -> dict:
     if rsi is None or ema20 is None or ema50 is None:
         return {"action": "HOLD", "confidence": 0.40, "reason": "Not enough indicator history"}
 
-    if rsi < 30 and ema20 > ema50:
-        return {"action": "BUY", "confidence": 0.65, "reason": "RSI oversold in uptrend (EMA20>EMA50)"}
+    # BUY: Oversold in uptrend
+    if rsi < 35 and ema20 > ema50:
+        return {"action": "BUY", "confidence": 0.70, "reason": "Dip in uptrend (RSI<35 & EMA20>EMA50)"}
 
-    if rsi > 70 and ema20 < ema50:
-        return {"action": "SELL", "confidence": 0.65, "reason": "RSI overbought in downtrend (EMA20<EMA50)"}
+    # SELL: Take profit in uptrend
+    if rsi > 70 and ema20 > ema50:
+        return {"action": "SELL", "confidence": 0.65, "reason": "Overbought in uptrend (take profit)"}
+
+    # SELL: Weakness in downtrend
+    if rsi < 45 and ema20 < ema50:
+        return {"action": "SELL", "confidence": 0.60, "reason": "Weak momentum in downtrend"}
 
     return {"action": "HOLD", "confidence": 0.55, "reason": "No strong signal"}
 
