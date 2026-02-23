@@ -1,66 +1,34 @@
 services:
-  cryptobot_1h:
+  cryptobot:
+    user: "0:0"
     build: .
-    container_name: cryptobot_1h
+    container_name: cryptobot
     volumes:
       - cryptobot-data:/data
     environment:
+      # === Bitvavo ===
       BITVAVO_API_KEY: "${BITVAVO_API_KEY}"
       BITVAVO_API_SECRET: "${BITVAVO_API_SECRET}"
 
-      SYMBOLS: "${SYMBOLS:-}"
-      SYMBOL: "${SYMBOL:-BTC-EUR}"
-
-      INTERVAL: "1h"
-      CANDLE_LIMIT: "${CANDLE_LIMIT:-300}"
-
-      USE_AI: "${USE_AI:-false}"
+      # === OpenAI (optioneel) ===
       OPENAI_API_KEY: "${OPENAI_API_KEY}"
-      OPENAI_MODEL: "${OPENAI_MODEL:-gpt-4.1-mini}"
 
+      # === Bot settings ===
+      SYMBOL: "${SYMBOL:-BTC-EUR}"
+      SYMBOLS: "${SYMBOLS:-}"
+      INTERVAL: "${INTERVAL:-1h}"
+      CANDLE_LIMIT: "${CANDLE_LIMIT:-500}"
+      USE_AI: "${USE_AI:-false}"
+
+      # === Telegram settings ===
       TELEGRAM_ENABLED: "${TELEGRAM_ENABLED:-true}"
       TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
       TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID:-}"
       TELEGRAM_SEND_ALL: "${TELEGRAM_SEND_ALL:-false}"
-      TELEGRAM_ON_CHANGE: "${TELEGRAM_ON_CHANGE:-true}"
 
-      # eigen state file voor 1h
-      STATE_FILE: "/data/state_1h.json"
 
-      # scheduler (1h)
-      RUN_EVERY_SECONDS: "3600"
-    restart: unless-stopped
-
-  cryptobot_15m:
-    build: .
-    container_name: cryptobot_15m
-    volumes:
-      - cryptobot-data:/data
-    environment:
-      BITVAVO_API_KEY: "${BITVAVO_API_KEY}"
-      BITVAVO_API_SECRET: "${BITVAVO_API_SECRET}"
-
-      SYMBOLS: "${SYMBOLS:-}"
-      SYMBOL: "${SYMBOL:-BTC-EUR}"
-
-      INTERVAL: "15m"
-      CANDLE_LIMIT: "${CANDLE_LIMIT_15M:-300}"
-
-      USE_AI: "${USE_AI:-false}"
-      OPENAI_API_KEY: "${OPENAI_API_KEY}"
-      OPENAI_MODEL: "${OPENAI_MODEL:-gpt-4.1-mini}"
-
-      TELEGRAM_ENABLED: "${TELEGRAM_ENABLED:-true}"
-      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
-      TELEGRAM_CHAT_ID: "${TELEGRAM_CHAT_ID:-}"
-      TELEGRAM_SEND_ALL: "${TELEGRAM_SEND_ALL_15M:-false}"
-      TELEGRAM_ON_CHANGE: "${TELEGRAM_ON_CHANGE_15M:-true}"
-
-      # eigen state file voor 15m
-      STATE_FILE: "/data/state_15m.json"
-
-      # scheduler (15m)
-      RUN_EVERY_SECONDS: "900"
+      # === Scheduler loop ===
+      RUN_EVERY_SECONDS: "${RUN_EVERY_SECONDS:-3600}"
     restart: unless-stopped
 
 volumes:
