@@ -7,6 +7,7 @@ WORKDIR /app
 
 COPY app/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
+RUN pip install -U python-bitvavo-api
 
 COPY app/bot.py /app/bot.py
 COPY app/entrypoint.sh /app/entrypoint.sh
